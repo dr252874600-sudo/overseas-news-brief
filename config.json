@@ -2,7 +2,7 @@
   "poll_minutes": 10,
   "lookback_hours": 24,
   "max_articles_per_source": 12,
-  "max_push_items": 18,
+  "max_push_items": 24,
   "sources": [
     {
       "name": "BBC",

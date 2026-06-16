@@ -1659,6 +1659,47 @@ def collect(config: dict[str, Any]) -> list[Article]:
     return sorted(unique.values(), key=lambda item: item.score, reverse=True)
 
 
+def select_brief_source_articles(articles: list[Article], max_items: int) -> list[Article]:
+    targets = [
+        ("international_politics", 8),
+        ("finance_business", 8),
+        ("steel_chain", 5),
+        ("overseas_china_major", 3),
+    ]
+    selected: list[Article] = []
+    used: set[str] = set()
+
+    def add(article: Article) -> bool:
+        if article.article_id in used or len(selected) >= max_items:
+            return False
+        selected.append(article)
+        used.add(article.article_id)
+        return True
+
+    for topic, target in targets:
+        count = 0
+        for article in articles:
+            if topic not in article.topics:
+                continue
+            if add(article):
+                count += 1
+            if count >= target:
+                break
+
+    for article in articles:
+        if len(selected) >= max_items:
+            break
+        add(article)
+
+    return selected
+
+
+def has_enough_public_material(article: Article) -> bool:
+    return bool(article.title) and (
+        len(article.public_text) >= 200 or len(article.summary) >= 40
+    )
+
+
 def run_once(config_path: Path, *, dry_run: bool, email_report: bool = False) -> int:
     config = json.loads(config_path.read_text(encoding="utf-8"))
     ensure_shellcrash_node()
@@ -1666,10 +1707,14 @@ def run_once(config_path: Path, *, dry_run: bool, email_report: bool = False) ->
     candidates: list[Article] = []
     collect_attempts = 1 if dry_run else 3
     for attempt in range(1, collect_attempts + 1):
-        candidates = [
+        fresh_articles = [
             article for article in collect(config)
             if not is_pushed(connection, article)
-        ][: config["max_push_items"]]
+        ]
+        candidates = select_brief_source_articles(
+            fresh_articles,
+            int(config.get("max_push_items", 24)),
+        )
         if candidates or attempt == collect_attempts:
             break
         print(
@@ -1686,17 +1731,26 @@ def run_once(config_path: Path, *, dry_run: bool, email_report: bool = False) ->
         )
 
     enrich_articles(candidates)
-    candidates = [
+    usable_candidates = [
         article
         for article in candidates
-        if len(article.public_text) >= 400 or len(article.summary) >= 220
+        if has_enough_public_material(article)
     ]
-    if len(candidates) < 3:
+    if len(usable_candidates) < 3:
         raise RuntimeError(
-            "Public article text is temporarily unavailable; fewer than three complete "
-            "articles remain, so nothing was sent."
+            "Public article material is temporarily unavailable; fewer than three "
+            "usable articles remain, so nothing was sent."
         )
-    source_articles = candidates
+    limited_text_count = sum(
+        1 for article in usable_candidates if len(article.public_text) < 400
+    )
+    if limited_text_count:
+        print(
+            f"其中 {limited_text_count}/{len(usable_candidates)} 篇报道只能依据公开标题或摘要生成，"
+            "会在简报中注明信息限制。",
+            flush=True,
+        )
+    source_articles = usable_candidates
     try:
         print("正在生成可独立阅读的中英文详细事件简报...", flush=True)
         candidates = build_event_brief(source_articles)
