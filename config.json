@@ -1,0 +1,104 @@
+{
+  "poll_minutes": 10,
+  "lookback_hours": 24,
+  "max_articles_per_source": 12,
+  "max_push_items": 18,
+  "sources": [
+    {
+      "name": "BBC",
+      "type": "rss",
+      "feeds": [
+        "https://feeds.bbci.co.uk/news/world/rss.xml",
+        "https://feeds.bbci.co.uk/news/business/rss.xml",
+        "https://feeds.bbci.co.uk/news/technology/rss.xml"
+      ]
+    },
+    {
+      "name": "Bloomberg",
+      "type": "gdelt",
+      "domains": ["bloomberg.com"]
+    },
+    {
+      "name": "Reuters",
+      "type": "gdelt",
+      "domains": ["reuters.com"]
+    },
+    {
+      "name": "Associated Press",
+      "type": "gdelt",
+      "domains": ["apnews.com"]
+    },
+    {
+      "name": "AFP",
+      "type": "gdelt",
+      "domains": ["afp.com"]
+    },
+    {
+      "name": "The New York Times",
+      "type": "rss",
+      "feeds": [
+        "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+        "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
+        "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
+        "https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml"
+      ]
+    },
+    {
+      "name": "The Wall Street Journal",
+      "type": "rss",
+      "feeds": [
+        "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
+        "https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml",
+        "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+        "https://feeds.a.dj.com/rss/RSSWSJD.xml"
+      ]
+    },
+    {
+      "name": "Al Jazeera",
+      "type": "rss",
+      "feeds": ["https://www.aljazeera.com/xml/rss/all.xml"]
+    },
+    {
+      "name": "Global Markets",
+      "type": "google_query",
+      "queries": [
+        "(US stocks OR Wall Street OR Hong Kong stocks OR A-shares) market major company earnings",
+        "(artificial intelligence OR semiconductor OR banking OR healthcare OR energy OR consumer) major company industry news"
+      ]
+    },
+    {
+      "name": "Steel Industry",
+      "type": "google_query",
+      "queries": [
+        "(China steel mill OR Chinese steel production OR steel inventory) latest",
+        "(China rebar OR hot rolled coil OR steel price) latest price market",
+        "(iron ore OR coking coal OR coke OR scrap steel) China price supply demand",
+        "(China steel exports OR China steel imports) tariff anti-dumping trade"
+      ]
+    }
+  ],
+  "topics": {
+    "international_politics": [
+      "election", "government", "president", "prime minister", "parliament",
+      "war", "conflict", "sanction", "diplomacy", "military", "geopolitics"
+    ],
+    "finance_business": [
+      "stocks", "stock market", "wall street", "nasdaq", "s&p 500", "hang seng",
+      "hong kong stocks", "a-shares", "earnings", "shares", "investors",
+      "semiconductor", "bank", "healthcare", "energy", "consumer", "automaker",
+      "technology", "artificial intelligence", " AI ", "chip", "software",
+      "cybersecurity", "robot", "space", "startup", "company", "industry"
+    ],
+    "overseas_china_major": [
+      "china", "chinese", "beijing", "PLA", "taiwan",
+      "china censorship", "not reported in china", "suppressed in china",
+      "china human rights", "xinjiang", "tibet", "political prisoner",
+      "china anti-espionage", "china state security", "china data security"
+    ],
+    "steel_chain": [
+      "steel", "iron ore", "coking coal", "metallurgical coal", "coke",
+      "scrap", "rebar", "hot-rolled coil", "cold-rolled coil", "steel mill",
+      "blast furnace", "ferroalloy", "steel inventory"
+    ]
+  }
+}

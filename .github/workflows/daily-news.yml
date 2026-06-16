@@ -1,0 +1,73 @@
+name: Daily Overseas News Brief
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Beijing time 08:00 and 18:00.
+    - cron: "0 0 * * *"
+    - cron: "0 10 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-overseas-news-brief
+  cancel-in-progress: false
+
+jobs:
+  send-brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TZ: Asia/Shanghai
+      PYTHONUTF8: "1"
+      DISABLE_SHELLCRASH_CHECK: "1"
+      GITHUB_PAGES_REPO_DIR: ${{ github.workspace }}
+      GITHUB_PAGES_URL: https://dr252874600-sudo.github.io/overseas-news-brief
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: gemini-2.5-flash-lite
+      EMAIL_163_ADDRESS: ${{ secrets.EMAIL_163_ADDRESS }}
+      EMAIL_163_AUTH_CODE: ${{ secrets.EMAIL_163_AUTH_CODE }}
+      EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+      WECHAT_TEST_APP_ID: ${{ secrets.WECHAT_TEST_APP_ID }}
+      WECHAT_TEST_APP_SECRET: ${{ secrets.WECHAT_TEST_APP_SECRET }}
+      WECHAT_TEST_OPEN_ID: ${{ secrets.WECHAT_TEST_OPEN_ID }}
+      WECHAT_TEST_TEMPLATE_ID: ${{ secrets.WECHAT_TEST_TEMPLATE_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate secrets
+        run: |
+          python - <<'PY'
+          import os, sys
+          required = [
+              "GEMINI_API_KEY",
+              "EMAIL_163_ADDRESS",
+              "EMAIL_163_AUTH_CODE",
+              "EMAIL_RECIPIENT",
+              "WECHAT_TEST_APP_ID",
+              "WECHAT_TEST_APP_SECRET",
+              "WECHAT_TEST_OPEN_ID",
+              "WECHAT_TEST_TEMPLATE_ID",
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              print("Missing GitHub Secrets: " + ", ".join(missing))
+              sys.exit(1)
+          PY
+
+      - name: Generate and send brief
+        run: python news_push.py --email
