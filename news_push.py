@@ -106,6 +106,10 @@ def utc_now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
+def local_now() -> dt.datetime:
+    return dt.datetime.now().astimezone()
+
+
 def load_local_env() -> None:
     if not ENV_PATH.exists():
         return
@@ -278,6 +282,7 @@ def post_json(
 ) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     for attempt in range(1, attempts + 1):
+        rate_limited = False
         request = urllib.request.Request(
             url,
             data=body,
@@ -288,6 +293,7 @@ def post_json(
             with urllib.request.urlopen(request, timeout=90) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
+            rate_limited = error.code == 429
             if error.code != 429 and error.code < 500:
                 raise
             if attempt == attempts:
@@ -295,8 +301,9 @@ def post_json(
         except (urllib.error.URLError, TimeoutError, http.client.RemoteDisconnected):
             if attempt == attempts:
                 raise
-        print(f"网络连接暂时中断，正在进行第{attempt + 1}次尝试...", flush=True)
-        time.sleep(attempt * 3)
+        print(f"网络连接或接口额度暂时受限，正在进行第{attempt + 1}次尝试...", flush=True)
+        delay = min(90, attempt * 20) if rate_limited else attempt * 5
+        time.sleep(delay)
     raise RuntimeError("请求失败。")
 
 
@@ -691,7 +698,56 @@ def init_db() -> sqlite3.Connection:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sent_slots (
+            slot_id TEXT PRIMARY KEY,
+            sent_at TEXT NOT NULL
+        )
+        """
+    )
     return connection
+
+
+def current_schedule_slot(now: dt.datetime | None = None) -> str | None:
+    now = now or local_now()
+    minutes = now.hour * 60 + now.minute
+    date = now.strftime("%Y-%m-%d")
+    if 7 * 60 + 50 <= minutes <= 15 * 60 + 30:
+        return f"{date}-am"
+    if 17 * 60 + 50 <= minutes <= 23 * 60 + 50:
+        return f"{date}-pm"
+    return None
+
+
+def is_slot_sent(connection: sqlite3.Connection, slot_id: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sent_slots WHERE slot_id = ?", (slot_id,)
+    ).fetchone()
+    return row is not None
+
+
+def mark_slot_sent(connection: sqlite3.Connection, slot_id: str) -> None:
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO sent_slots(slot_id, sent_at)
+        VALUES (?, ?)
+        """,
+        (slot_id, utc_now().isoformat()),
+    )
+    connection.commit()
+
+
+def scheduled_slot_to_run(connection: sqlite3.Connection) -> str | None:
+    slot_id = current_schedule_slot()
+    if not slot_id:
+        print("当前不在上午或下午发送窗口内，本次云端检查跳过。")
+        return None
+    if is_slot_sent(connection, slot_id):
+        print(f"{slot_id} 已经成功发送过，本次云端检查跳过。")
+        return None
+    print(f"{slot_id} 尚未成功发送，开始补发本档简报。")
+    return slot_id
 
 
 def is_pushed(connection: sqlite3.Connection, article: Article) -> bool:
@@ -793,6 +849,99 @@ def validate_brief_quality(articles: list[Article]) -> None:
         raise RuntimeError(
             f"{len(incomplete)}/{len(articles)} articles lack complete bilingual coverage."
         )
+
+
+def has_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+
+def free_translate_to_chinese(text: str, *, limit: int = 1200) -> str:
+    text = clean_text(text)
+    if not text:
+        return ""
+    if has_chinese(text):
+        return text[:limit]
+    query = urllib.parse.urlencode(
+        {
+            "client": "gtx",
+            "sl": "auto",
+            "tl": "zh-CN",
+            "dt": "t",
+            "q": text[:limit],
+        }
+    )
+    try:
+        raw = request_bytes(
+            f"https://translate.googleapis.com/translate_a/single?{query}",
+            timeout=20,
+            attempts=2,
+        )
+        payload = json.loads(raw.decode("utf-8"))
+        translated = "".join(
+            part[0]
+            for part in payload[0]
+            if isinstance(part, list) and part and isinstance(part[0], str)
+        )
+        return clean_text(translated)
+    except Exception:
+        return ""
+
+
+def fallback_reason(topic: str) -> str:
+    reasons = {
+        "international_politics": "该事项可能影响地缘局势、外交判断或相关大宗商品风险，后续需结合更多报道继续跟踪。",
+        "finance_business": "该事项可能影响相关市场、行业或重点公司情绪，适合作为投资观察线索而非直接投资建议。",
+        "steel_chain": "该事项与钢厂生产、原料成本、钢材价格或进出口环境相关，适合纳入产业链日常观察。",
+        "overseas_china_major": "该事项属于海外媒体关注的涉华议题，公开材料仍需进一步交叉核实。",
+    }
+    return reasons.get(topic, "该事项具有持续跟踪价值，公开材料有限时需等待更多来源确认。")
+
+
+def article_public_material(article: Article, *, limit: int = 1600) -> str:
+    parts = [article.summary, article.public_text]
+    material = clean_text(" ".join(part for part in parts if part))
+    return material[:limit]
+
+
+def build_fallback_brief(articles: list[Article]) -> list[Article]:
+    fallback_articles: list[Article] = []
+    for article in articles[:18]:
+        section = article.primary_category
+        material = article_public_material(article)
+        zh_title = free_translate_to_chinese(article.title, limit=220) or article.title
+        zh_material = free_translate_to_chinese(material, limit=1200)
+        if zh_material:
+            zh_summary = (
+                "接口限流保底版：以下内容依据公开标题、RSS摘要或可访问正文片段生成。"
+                + zh_material
+            )
+        else:
+            zh_summary = (
+                "接口限流保底版：本条暂时无法完成机器翻译，先保留公开英文信息，避免漏发。"
+                f"英文标题：{article.title}。"
+            )
+            if material:
+                zh_summary += f"公开摘要：{material[:900]}"
+        short_summary = zh_summary[:160]
+        en_summary = material or article.title
+        fallback_articles.append(
+            Article(
+                source=article.source,
+                title=article.title,
+                url=article.url,
+                published=article.published,
+                summary=short_summary,
+                public_text=article.public_text,
+                topics=[section],
+                score=article.score,
+                zh_title=zh_title,
+                short_summary=short_summary,
+                zh_summary=zh_summary,
+                en_summary=en_summary[:1800],
+                why_it_matters=fallback_reason(section),
+            )
+        )
+    return fallback_articles
 
 
 def event_brief_input(articles: list[Article]) -> tuple[list[dict[str, Any]], str]:
@@ -909,11 +1058,11 @@ def build_event_brief_batch(articles: list[Article]) -> list[Article]:
                 "generationConfig": {
                     "responseMimeType": "application/json",
                     "temperature": 0.1,
-                "maxOutputTokens": 8192,
-            },
+                    "maxOutputTokens": 8192,
+                },
             },
             {},
-            attempts=5,
+            attempts=4,
         )
         text = payload["candidates"][0]["content"]["parts"][0]["text"]
         return apply_event_brief(articles, parse_json_array(text))
@@ -942,6 +1091,12 @@ def build_event_brief(articles: list[Article]) -> list[Article]:
         "steel_chain",
         "overseas_china_major",
     ]
+    section_limits = {
+        "international_politics": 6,
+        "finance_business": 6,
+        "steel_chain": 4,
+        "overseas_china_major": 2,
+    }
     events: list[Article] = []
     used_ids: set[str] = set()
     for section in section_order:
@@ -952,13 +1107,14 @@ def build_event_brief(articles: list[Article]) -> list[Article]:
         ]
         if not batch:
             continue
-        # Keep each editorial request small enough for unstable proxy links.
-        for start in range(0, min(len(batch), 9), 3):
-            chunk = batch[start : start + 3]
+        # Keep requests few enough for free-tier limits while preserving category coverage.
+        limit = min(len(batch), section_limits.get(section, 4))
+        for start in range(0, limit, 6):
+            chunk = batch[start : start + 6]
             section_events = build_event_brief_batch(chunk)
             events.extend(section_events)
             used_ids.update(article.article_id for article in chunk)
-            time.sleep(3)
+            time.sleep(int(os.environ.get("EDITORIAL_API_PAUSE_SECONDS", "20")))
     if not events:
         raise RuntimeError("No complete event briefs were generated.")
     return events
@@ -1700,7 +1856,13 @@ def has_enough_public_material(article: Article) -> bool:
     )
 
 
-def run_once(config_path: Path, *, dry_run: bool, email_report: bool = False) -> int:
+def run_once(
+    config_path: Path,
+    *,
+    dry_run: bool,
+    email_report: bool = False,
+    slot_id: str | None = None,
+) -> int:
     config = json.loads(config_path.read_text(encoding="utf-8"))
     ensure_shellcrash_node()
     connection = init_db()
@@ -1751,20 +1913,25 @@ def run_once(config_path: Path, *, dry_run: bool, email_report: bool = False) ->
             flush=True,
         )
     source_articles = usable_candidates
+    fallback_mode = False
     try:
         print("正在生成可独立阅读的中英文详细事件简报...", flush=True)
         candidates = build_event_brief(source_articles)
     except (
         urllib.error.URLError,
+        urllib.error.HTTPError,
         TimeoutError,
         json.JSONDecodeError,
         KeyError,
         RuntimeError,
     ) as error:
-        raise RuntimeError(
-            "Bilingual detailed brief generation failed; nothing was sent. "
-            "The scheduled runner will retry."
-        ) from error
+        fallback_mode = True
+        print(
+            f"[warn] 详细中英文简报生成失败，改发保底版：{type(error).__name__}: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        candidates = build_fallback_brief(source_articles)
 
     digest = format_digest(candidates)
     print(digest)
@@ -1781,7 +1948,11 @@ def run_once(config_path: Path, *, dry_run: bool, email_report: bool = False) ->
         if missing_email:
             raise RuntimeError("尚未完成163邮箱设置。")
         html_path, pdf_path = create_report_files(candidates)
-        send_163_email(html_path, pdf_path)
+        subject_prefix = "【保底版】" if fallback_mode else ""
+        send_163_email(html_path, pdf_path, subject_prefix=subject_prefix)
+        mark_pushed(connection, source_articles)
+        if slot_id:
+            mark_slot_sent(connection, slot_id)
         web_url = ""
         try:
             web_url = publish_report_to_github_pages(html_path)
@@ -1794,19 +1965,24 @@ def run_once(config_path: Path, *, dry_run: bool, email_report: bool = False) ->
             "WECHAT_TEST_OPEN_ID",
             "WECHAT_TEST_TEMPLATE_ID",
         ]
+        wechat_ok = False
         if all(os.environ.get(name) for name in test_fields):
-            push_wechat_notice(
-                f"海外新闻简报已送达（{len(candidates)}条）",
-                [article.zh_title or article.title for article in candidates],
-                (
-                    "点击本卡片查看全部摘要和详细内容。"
-                    if web_url
-                    else "网页发布暂时失败，完整内容请先查看163邮箱。"
-                ),
-                target_url=web_url or "https://mail.163.com/",
-            )
-        mark_pushed(connection, source_articles)
-        print(f"\n邮件发送成功，包含 {len(candidates)} 条新闻和PDF附件；微信提醒已同步。")
+            try:
+                push_wechat_notice(
+                    f"海外新闻简报已送达（{len(candidates)}条）",
+                    [article.zh_title or article.title for article in candidates],
+                    (
+                        "点击本卡片查看全部摘要和详细内容。"
+                        if web_url
+                        else "网页发布暂时失败，完整内容请先查看163邮箱。"
+                    ),
+                    target_url=web_url or "https://mail.163.com/",
+                )
+                wechat_ok = True
+            except Exception as error:
+                print(f"[warn] 微信提醒暂时失败：{error}", file=sys.stderr)
+        wechat_text = "微信提醒已同步" if wechat_ok else "微信提醒未确认"
+        print(f"\n邮件发送成功，包含 {len(candidates)} 条新闻和PDF附件；{wechat_text}。")
         return 0
 
     test_fields = [
@@ -1823,6 +1999,8 @@ def run_once(config_path: Path, *, dry_run: bool, email_report: bool = False) ->
             raise RuntimeError("Missing environment variables: " + ", ".join(missing))
     push_news(digest, candidates)
     mark_pushed(connection, source_articles)
+    if slot_id:
+        mark_slot_sent(connection, slot_id)
     print(f"\nPushed {len(candidates)} headlines.")
     return 0
 
@@ -1835,6 +2013,11 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true", help="Print without pushing or deduping")
     parser.add_argument("--email", action="store_true", help="Generate and send the 163 email report")
+    parser.add_argument(
+        "--scheduled-check",
+        action="store_true",
+        help="Only send once for the current morning/evening schedule window",
+    )
     parser.add_argument("--test-wechat", action="store_true", help="Send a WeChat test notice")
     parser.add_argument(
         "--failure-notice",
@@ -1872,8 +2055,23 @@ def main() -> int:
         replay_latest_report()
         return 0
 
+    slot_id = None
+    if args.scheduled_check:
+        connection = init_db()
+        try:
+            slot_id = scheduled_slot_to_run(connection)
+        finally:
+            connection.close()
+        if not slot_id:
+            return 0
+
     if not args.loop:
-        return run_once(args.config, dry_run=args.dry_run, email_report=args.email)
+        return run_once(
+            args.config,
+            dry_run=args.dry_run,
+            email_report=args.email,
+            slot_id=slot_id,
+        )
 
     while True:
         try:
