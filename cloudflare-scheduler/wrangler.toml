@@ -1,0 +1,12 @@
+name = "overseas-news-scheduler"
+main = "src/index.js"
+compatibility_date = "2026-06-20"
+workers_dev = true
+
+[triggers]
+crons = ["0 0 * * *", "0 10 * * *"]
+
+[vars]
+GITHUB_OWNER = "dr252874600-sudo"
+GITHUB_REPOSITORY = "overseas-news-brief"
+GITHUB_WORKFLOW = "daily-news.yml"

@@ -2,14 +2,20 @@ name: Daily Overseas News Brief
 
 on:
   workflow_dispatch:
-  schedule:
-    # Beijing time retry windows: 07:50-11:50 and 17:50-22:50.
-    # Keep the two windows separate so a late GitHub runner still knows
-    # whether it is catching up the morning or evening brief.
-    - cron: "50 23 * * *"
-    - cron: "5,20,35,50 0,1,2,3 * * *"
-    - cron: "50 9 * * *"
-    - cron: "5,20,35,50 10,11,12,13,14 * * *"
+    inputs:
+      delivery_slot:
+        description: "Cloud scheduler slot: am or pm"
+        required: false
+        default: "manual"
+        type: choice
+        options:
+          - manual
+          - am
+          - pm
+      delivery_date:
+        description: "Cloud scheduler date in YYYY-MM-DD format"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -37,7 +43,6 @@ jobs:
       WECHAT_TEST_APP_SECRET: ${{ secrets.WECHAT_TEST_APP_SECRET }}
       WECHAT_TEST_OPEN_ID: ${{ secrets.WECHAT_TEST_OPEN_ID }}
       WECHAT_TEST_TEMPLATE_ID: ${{ secrets.WECHAT_TEST_TEMPLATE_ID }}
-      BRIEF_SCHEDULE_CRON: ${{ github.event.schedule }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -76,8 +81,8 @@ jobs:
 
       - name: Generate and send brief
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            python news_push.py --email
+          if [ "${{ inputs.delivery_slot }}" = "am" ] || [ "${{ inputs.delivery_slot }}" = "pm" ]; then
+            python news_push.py --email --delivery-slot "${{ inputs.delivery_slot }}" --delivery-date "${{ inputs.delivery_date }}"
           else
-            python news_push.py --email --scheduled-check
+            python news_push.py --email
           fi

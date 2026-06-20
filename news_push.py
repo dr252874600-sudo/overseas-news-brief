@@ -2053,6 +2053,15 @@ def main() -> int:
         action="store_true",
         help="Only send once for the current morning/evening schedule window",
     )
+    parser.add_argument(
+        "--delivery-slot",
+        choices=("am", "pm"),
+        help="Send the specified cloud-scheduled morning or evening brief once",
+    )
+    parser.add_argument(
+        "--delivery-date",
+        help="ISO date for --delivery-slot, for example 2026-06-20",
+    )
     parser.add_argument("--test-wechat", action="store_true", help="Send a WeChat test notice")
     parser.add_argument(
         "--failure-notice",
@@ -2090,7 +2099,29 @@ def main() -> int:
         replay_latest_report()
         return 0
 
+    if args.delivery_date and not args.delivery_slot:
+        parser.error("--delivery-date requires --delivery-slot")
+    if args.delivery_slot and args.scheduled_check:
+        parser.error("Use either --delivery-slot or --scheduled-check, not both")
+
     slot_id = None
+    if args.delivery_slot:
+        try:
+            delivery_date = (
+                dt.date.fromisoformat(args.delivery_date)
+                if args.delivery_date
+                else local_now().date()
+            )
+        except ValueError:
+            parser.error("--delivery-date must use YYYY-MM-DD format")
+        slot_id = f"{delivery_date.isoformat()}-{args.delivery_slot}"
+        connection = init_db()
+        try:
+            if is_slot_sent(connection, slot_id):
+                print(f"{slot_id} has already been sent; cloud trigger skipped.")
+                return 0
+        finally:
+            connection.close()
     if args.scheduled_check:
         connection = init_db()
         try:
