@@ -38,6 +38,18 @@ DB_PATH = ROOT / "news.db"
 ENV_PATH = ROOT / ".env"
 REPORTS_DIR = ROOT / "reports"
 SHELLCRASH_API = "http://192.168.50.1:9999"
+MORNING_SCHEDULES = frozenset(
+    {
+        "50 23 * * *",
+        "5,20,35,50 0,1,2,3 * * *",
+    }
+)
+EVENING_SCHEDULES = frozenset(
+    {
+        "50 9 * * *",
+        "5,20,35,50 10,11,12,13,14 * * *",
+    }
+)
 
 
 @dataclass
@@ -709,13 +721,36 @@ def init_db() -> sqlite3.Connection:
     return connection
 
 
+def slot_from_schedule_trigger(now: dt.datetime | None = None) -> str | None:
+    """Return the intended delivery slot for a GitHub cron trigger.
+
+    GitHub can start scheduled jobs hours late. The cron expression is more
+    trustworthy than the runner's actual start time for deciding whether the
+    run belongs to the morning or evening brief.
+    """
+    now = now or local_now()
+    schedule = os.getenv("BRIEF_SCHEDULE_CRON", "").strip()
+    date = now.date()
+    if schedule in MORNING_SCHEDULES:
+        return f"{date.isoformat()}-am"
+    if schedule in EVENING_SCHEDULES:
+        # A delayed evening job may begin after midnight. It still belongs to
+        # the previous calendar day's evening brief.
+        if now.hour < 8:
+            date -= dt.timedelta(days=1)
+        return f"{date.isoformat()}-pm"
+    return None
+
+
 def current_schedule_slot(now: dt.datetime | None = None) -> str | None:
     now = now or local_now()
     minutes = now.hour * 60 + now.minute
     date = now.strftime("%Y-%m-%d")
-    if 7 * 60 + 50 <= minutes <= 15 * 60 + 30:
+    # Fallback for an older queued GitHub job that lacks its original cron
+    # expression. Prefer a late brief over silently skipping it.
+    if minutes <= 15 * 60 + 30:
         return f"{date}-am"
-    if 17 * 60 + 50 <= minutes <= 23 * 60 + 50:
+    if minutes <= 23 * 60 + 59:
         return f"{date}-pm"
     return None
 
@@ -739,7 +774,7 @@ def mark_slot_sent(connection: sqlite3.Connection, slot_id: str) -> None:
 
 
 def scheduled_slot_to_run(connection: sqlite3.Connection) -> str | None:
-    slot_id = current_schedule_slot()
+    slot_id = slot_from_schedule_trigger() or current_schedule_slot()
     if not slot_id:
         print("当前不在上午或下午发送窗口内，本次云端检查跳过。")
         return None

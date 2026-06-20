@@ -4,10 +4,12 @@ on:
   workflow_dispatch:
   schedule:
     # Beijing time retry windows: 07:50-11:50 and 17:50-22:50.
-    # GitHub scheduled jobs can be delayed, so the script itself sends only
-    # once per morning/evening slot and skips the extra checks after success.
-    - cron: "50 9,23 * * *"
-    - cron: "5,20,35,50 0,1,2,3,10,11,12,13,14 * * *"
+    # Keep the two windows separate so a late GitHub runner still knows
+    # whether it is catching up the morning or evening brief.
+    - cron: "50 23 * * *"
+    - cron: "5,20,35,50 0,1,2,3 * * *"
+    - cron: "50 9 * * *"
+    - cron: "5,20,35,50 10,11,12,13,14 * * *"
 
 permissions:
   contents: write
@@ -35,6 +37,7 @@ jobs:
       WECHAT_TEST_APP_SECRET: ${{ secrets.WECHAT_TEST_APP_SECRET }}
       WECHAT_TEST_OPEN_ID: ${{ secrets.WECHAT_TEST_OPEN_ID }}
       WECHAT_TEST_TEMPLATE_ID: ${{ secrets.WECHAT_TEST_TEMPLATE_ID }}
+      BRIEF_SCHEDULE_CRON: ${{ github.event.schedule }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
